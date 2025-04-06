@@ -182,8 +182,11 @@ void* producer_thread(void* arg) {
 
         pthread_mutex_lock(&queue_mutex);
 
-        while (queue->free <= queue->reserved_slots && !should_terminate) {
-            printf("Производитель %d: нет доступных слотов (зарезервированы для уменьшения размера)\n", id);
+        while ((queue->free <= queue->reserved_slots || queue->free == 0) && !should_terminate) {
+            printf("Производитель %d: нет доступных слотов %s\n", 
+                   id, 
+                   (queue->free <= queue->reserved_slots && resize_decrease_pending) ? 
+                   "(зарезервированы для уменьшения размера)" : "(очередь заполнена)");
             pthread_cond_wait(&cond_empty, &queue_mutex);
         }
 
@@ -394,8 +397,12 @@ void show_status() {
 void stop_producer() {
     if (num_producers > 0) {
         num_producers--;
-        pthread_cancel(producers[num_producers]);
-        pthread_join(producers[num_producers], NULL);
+
+        pthread_mutex_lock(&queue_mutex);
+        pthread_cond_broadcast(&cond_empty);
+        pthread_mutex_unlock(&queue_mutex);
+
+        pthread_detach(producers[num_producers]);
         printf("Остановлен производитель #%d\n", num_producers + 1);
     } else {
         printf("Нет работающих производителей\n");
@@ -405,8 +412,12 @@ void stop_producer() {
 void stop_consumer() {
     if (num_consumers > 0) {
         num_consumers--;
-        pthread_cancel(consumers[num_consumers]);
-        pthread_join(consumers[num_consumers], NULL);
+
+        pthread_mutex_lock(&queue_mutex);
+        pthread_cond_broadcast(&cond_full);
+        pthread_mutex_unlock(&queue_mutex);
+
+        pthread_detach(consumers[num_consumers]);
         printf("Остановлен потребитель #%d\n", num_consumers + 1);
     } else {
         printf("Нет работающих потребителей\n");

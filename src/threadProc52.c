@@ -71,11 +71,35 @@ int main() {
             }
         }
 
-        if (num_producers == 0 && num_consumers == 0 &&
-            (queue->added > 0 || queue->extracted > 0)) {
-            printf("Предотвращение тупика: создание производителя и потребителя\n");
-            create_producer();
-            create_consumer();
+        static time_t last_activity_check = 0;
+        time_t current_time = time(NULL);
+
+        if (current_time - last_activity_check >= 2) {
+            last_activity_check = current_time;
+            
+            pthread_mutex_lock(&queue_mutex);
+            int occupied = queue->current_size - queue->free;
+            static unsigned long last_added = 0;
+            static unsigned long last_extracted = 0;
+            
+            bool queue_activity_stalled = (queue->added == last_added && queue->extracted == last_extracted) && 
+                                         (queue->added > 0 || queue->extracted > 0);
+            
+            last_added = queue->added;
+            last_extracted = queue->extracted;
+            pthread_mutex_unlock(&queue_mutex);
+            
+            if (queue_activity_stalled) {
+                if (num_producers == 0 && occupied < queue->current_size) {
+                    printf("Предотвращение тупика: создание производителя (активность остановлена)\n");
+                    create_producer();
+                }
+                
+                if (num_consumers == 0 && occupied > 0) {
+                    printf("Предотвращение тупика: создание потребителя (активность остановлена)\n");
+                    create_consumer();
+                }
+            }
         }
 
         if (resize_decrease_pending) {
