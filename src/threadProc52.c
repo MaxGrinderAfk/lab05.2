@@ -74,11 +74,11 @@ int main() {
         static time_t last_activity_check = 0;
         time_t current_time = time(NULL);
 
-        if (current_time - last_activity_check >= 2) {
+        if (current_time - last_activity_check >= 1) {
             last_activity_check = current_time;
             
             pthread_mutex_lock(&queue_mutex);
-            int occupied = queue->current_size - queue->free;
+            //int occupied = queue->current_size - queue->free;
             static unsigned long last_added = 0;
             static unsigned long last_extracted = 0;
             
@@ -90,15 +90,21 @@ int main() {
             pthread_mutex_unlock(&queue_mutex);
             
             if (queue_activity_stalled) {
-                if (num_producers == 0 && occupied < queue->current_size) {
-                    printf("Предотвращение тупика: создание производителя (активность остановлена)\n");
+                if (num_producers == 0 && num_consumers == 0) {
+                    printf("Предотвращение тупика: создание производителя и потребителя(активность остановлена)\n");
                     create_producer();
+                    create_consumer();
+                }
+                /*if (num_producers == 0 && occupied < queue->current_size) {
+                    printf("Предотвращение тупика: создание производителя и потребителя(активность остановлена)\n");
+                    create_producer();
+                    create_consumer();
                 }
                 
                 if (num_consumers == 0 && occupied > 0) {
                     printf("Предотвращение тупика: создание потребителя (активность остановлена)\n");
                     create_consumer();
-                }
+                }*/
             }
         }
 
@@ -106,7 +112,7 @@ int main() {
             check_and_perform_resize();
         }
 
-        usleep(100000);
+        usleep(10000);
     }
 
     cleanup();

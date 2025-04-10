@@ -10,6 +10,8 @@ pthread_t* consumers;
 int num_producers = 0;
 int num_consumers = 0;
 bool should_terminate = false;
+bool* producer_running;
+bool* consumer_running;
 pthread_mutex_t resize_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t resize_cond = PTHREAD_COND_INITIALIZER;
 bool resize_in_progress = false;
@@ -174,7 +176,7 @@ void* producer_thread(void* arg) {
 
     srand(time(NULL) ^ (id * 1000));
 
-    while (!should_terminate) {
+    while (!should_terminate && producer_running[id]) {
         Message local_msg;
         create_message(&local_msg);
 
@@ -182,15 +184,15 @@ void* producer_thread(void* arg) {
 
         pthread_mutex_lock(&queue_mutex);
 
-        while ((queue->free <= queue->reserved_slots || queue->free == 0) && !should_terminate) {
-            printf("Производитель %d: нет доступных слотов %s\n", 
-                   id, 
-                   (queue->free <= queue->reserved_slots && resize_decrease_pending) ? 
+        while ((queue->free <= queue->reserved_slots || queue->free == 0) && !should_terminate && producer_running[id]) {
+            printf("Производитель %d: нет доступных слотов %s\n",
+                   id,
+                   (queue->free <= queue->reserved_slots && resize_decrease_pending) ?
                    "(зарезервированы для уменьшения размера)" : "(очередь заполнена)");
             pthread_cond_wait(&cond_empty, &queue_mutex);
         }
 
-        if (should_terminate) {
+        if (should_terminate || !producer_running[id]) {
             pthread_mutex_unlock(&queue_mutex);
             break;
         }
@@ -221,14 +223,14 @@ void* consumer_thread(void* arg) {
 
     srand(time(NULL) ^ ((id + 100) * 1000));
 
-    while (!should_terminate) {
+    while (!should_terminate && consumer_running[id]) {
         pthread_mutex_lock(&queue_mutex);
 
-        while ((queue->current_size - queue->free) == 0 && !should_terminate) {
+        while ((queue->current_size - queue->free) == 0 && !should_terminate && consumer_running[id]) {
             pthread_cond_wait(&cond_full, &queue_mutex);
         }
 
-        if (should_terminate) {
+        if (should_terminate || !consumer_running[id]) {
             pthread_mutex_unlock(&queue_mutex);
             break;
         }
@@ -323,6 +325,22 @@ void init_queue() {
     queue->added = 0;
     queue->extracted = 0;
     queue->reserved_slots = 0;
+    
+    producer_running = (bool*)malloc(MAX_PRODUCERS * sizeof(bool));
+    consumer_running = (bool*)malloc(MAX_CONSUMERS * sizeof(bool));
+    
+    if (!producer_running || !consumer_running) {
+        perror("malloc failed for thread status arrays");
+        exit(1);
+    }
+    
+    for (int i = 0; i < MAX_PRODUCERS; i++) {
+        producer_running[i] = false;
+    }
+    
+    for (int i = 0; i < MAX_CONSUMERS; i++) {
+        consumer_running[i] = false;
+    }
 }
 
 void create_producer() {
@@ -338,10 +356,12 @@ void create_producer() {
     }
 
     *id = num_producers;
+    producer_running[num_producers] = true;
 
     if (pthread_create(&producers[num_producers], NULL, producer_thread, id) != 0) {
         perror("pthread_create");
         free(id);
+        producer_running[num_producers] = false;
         return;
     }
 
@@ -362,10 +382,12 @@ void create_consumer() {
     }
 
     *id = num_consumers;
+    consumer_running[num_consumers] = true;
 
     if (pthread_create(&consumers[num_consumers], NULL, consumer_thread, id) != 0) {
         perror("pthread_create");
         free(id);
+        consumer_running[num_consumers] = false;
         return;
     }
 
@@ -397,12 +419,13 @@ void show_status() {
 void stop_producer() {
     if (num_producers > 0) {
         num_producers--;
+        producer_running[num_producers] = false;
 
         pthread_mutex_lock(&queue_mutex);
         pthread_cond_broadcast(&cond_empty);
         pthread_mutex_unlock(&queue_mutex);
 
-        pthread_detach(producers[num_producers]);
+        pthread_join(producers[num_producers], NULL);
         printf("Остановлен производитель #%d\n", num_producers + 1);
     } else {
         printf("Нет работающих производителей\n");
@@ -412,12 +435,13 @@ void stop_producer() {
 void stop_consumer() {
     if (num_consumers > 0) {
         num_consumers--;
+        consumer_running[num_consumers] = false;
 
         pthread_mutex_lock(&queue_mutex);
         pthread_cond_broadcast(&cond_full);
         pthread_mutex_unlock(&queue_mutex);
 
-        pthread_detach(consumers[num_consumers]);
+        pthread_join(consumers[num_consumers], NULL);
         printf("Остановлен потребитель #%d\n", num_consumers + 1);
     } else {
         printf("Нет работающих потребителей\n");
@@ -426,12 +450,23 @@ void stop_consumer() {
 
 void cleanup() {
     for (int i = 0; i < num_producers; i++) {
-        pthread_cancel(producers[i]);
+        producer_running[i] = false;
+    }
+    
+    for (int i = 0; i < num_consumers; i++) {
+        consumer_running[i] = false;
+    }
+    
+    pthread_mutex_lock(&queue_mutex);
+    pthread_cond_broadcast(&cond_empty);
+    pthread_cond_broadcast(&cond_full);
+    pthread_mutex_unlock(&queue_mutex);
+
+    for (int i = 0; i < num_producers; i++) {
         pthread_join(producers[i], NULL);
     }
 
     for (int i = 0; i < num_consumers; i++) {
-        pthread_cancel(consumers[i]);
         pthread_join(consumers[i], NULL);
     }
 
@@ -445,4 +480,6 @@ void cleanup() {
     free(queue);
     free(producers);
     free(consumers);
+    free(producer_running);
+    free(consumer_running);
 }
